@@ -159,6 +159,7 @@ class Package
 
   # TODO: Remove. Settings view calls this method currently.
   activateConfig: ->
+    return if @configSchemaRegisteredOnLoad
     @requireMainModule()
     @registerConfigSchemaFromMainModule()
 
@@ -387,6 +388,7 @@ class Package
     @activationPromise = null
     @resolveActivationPromise = null
     @activationCommandSubscriptions?.dispose()
+    @activationHookSubscriptions?.dispose()
     @configSchemaRegisteredOnActivate = false
     @deactivateResources()
     @deactivateKeymaps()
@@ -426,7 +428,7 @@ class Package
     return @mainModule if @mainModuleRequired
     unless @isCompatible()
       console.warn """
-        Failed to require the main module of '#{@name}' because it requires one or more incompatible native modules (#{_.map(@incompatibleModules, 'name').join(', ')}).
+        Failed to require the main module of '#{@name}' because it requires one or more incompatible native modules (#{_.pluck(@incompatibleModules, 'name').join(', ')}).
         Run `apm rebuild` in the package directory and restart Atom to resolve.
       """
       return

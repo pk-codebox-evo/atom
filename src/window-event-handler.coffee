@@ -12,6 +12,7 @@ class WindowEventHandler
 
     @previousOnbeforeunloadHandler = @window.onbeforeunload
     @window.onbeforeunload = @handleWindowBeforeunload
+    @addEventListener(@window, 'unload', @handleWindowUnload)
     @addEventListener(@window, 'focus', @handleWindowFocus)
     @addEventListener(@window, 'blur', @handleWindowBlur)
 
@@ -22,6 +23,15 @@ class WindowEventHandler
     @addEventListener(@document, 'contextmenu', @handleDocumentContextmenu)
     @subscriptions.add listen(@document, 'click', 'a', @handleLinkClick)
     @subscriptions.add listen(@document, 'submit', 'form', @handleFormSubmit)
+
+    browserWindow = @applicationDelegate.getCurrentWindow()
+    browserWindow.on 'enter-full-screen', @handleEnterFullScreen
+    @subscriptions.add new Disposable =>
+      browserWindow.removeListener('enter-full-screen', @handleEnterFullScreen)
+
+    browserWindow.on 'leave-full-screen', @handleLeaveFullScreen
+    @subscriptions.add new Disposable =>
+      browserWindow.removeListener('leave-full-screen', @handleLeaveFullScreen)
 
     @subscriptions.add @atomEnvironment.commands.add @window,
       'window:toggle-full-screen': @handleWindowToggleFullScreen
@@ -136,6 +146,12 @@ class WindowEventHandler
     @document.body.classList.add('is-blurred')
     @atomEnvironment.storeWindowDimensions()
 
+  handleEnterFullScreen: =>
+    @document.body.classList.add("fullscreen")
+
+  handleLeaveFullScreen: =>
+    @document.body.classList.remove("fullscreen")
+
   handleWindowBeforeunload: =>
     confirmed = @atomEnvironment.workspace?.confirmClose(windowCloseRequested: true)
     if confirmed and not @reloadRequested and not @atomEnvironment.inSpecMode() and @atomEnvironment.getCurrentWindow().isWebViewFocused()
@@ -148,7 +164,8 @@ class WindowEventHandler
     else
       @applicationDelegate.didCancelWindowUnload()
 
-    confirmed
+    # Returning any non-void value stops the window from unloading
+    return true unless confirmed
 
   handleWindowUnload: =>
     @atomEnvironment.destroy()

@@ -1,5 +1,5 @@
 _ = require 'underscore-plus'
-{screen, ipcRenderer, remote, shell, webFrame} = require 'electron'
+{screen, ipcRenderer, remote, shell, systemPreferences, webFrame} = require 'electron'
 ipcHelpers = require './ipc-helpers'
 {Disposable} = require 'event-kit'
 {getWindowLoadSettings, setWindowLoadSettings} = require './window-load-settings-helpers'
@@ -23,10 +23,10 @@ class ApplicationDelegate
     ipcRenderer.send("call-window-method", "close")
 
   getTemporaryWindowState: ->
-    ipcHelpers.call('get-temporary-window-state')
+    ipcHelpers.call('get-temporary-window-state').then (stateJSON) -> JSON.parse(stateJSON)
 
   setTemporaryWindowState: (state) ->
-    ipcHelpers.call('set-temporary-window-state', state)
+    ipcHelpers.call('set-temporary-window-state', JSON.stringify(state))
 
   getWindowSize: ->
     [width, height] = remote.getCurrentWindow().getSize()
@@ -57,11 +57,17 @@ class ApplicationDelegate
   reloadWindow: ->
     ipcRenderer.send("call-window-method", "reload")
 
+  minimizeWindow: ->
+    ipcRenderer.send("call-window-method", "minimize")
+
   isWindowMaximized: ->
     remote.getCurrentWindow().isMaximized()
 
   maximizeWindow: ->
     ipcRenderer.send("call-window-method", "maximize")
+
+  unmaximizeWindow: ->
+    ipcRenderer.send("call-window-method", "unmaximize")
 
   isWindowFullScreen: ->
     remote.getCurrentWindow().isFullScreen()
@@ -129,6 +135,9 @@ class ApplicationDelegate
 
   getPrimaryDisplayWorkAreaSize: ->
     remote.screen.getPrimaryDisplay().workAreaSize
+
+  getUserDefault: (key, type) ->
+    remote.systemPreferences.getUserDefault(key, type)
 
   confirm: ({message, detailedMessage, buttons}) ->
     buttons ?= {}
@@ -234,6 +243,17 @@ class ApplicationDelegate
     ipcRenderer.on('context-command', outerCallback)
     new Disposable ->
       ipcRenderer.removeListener('context-command', outerCallback)
+
+  onSaveWindowStateRequest: (callback) ->
+    outerCallback = (event, message) ->
+      callback(event)
+
+    ipcRenderer.on('save-window-state', outerCallback)
+    new Disposable ->
+      ipcRenderer.removeListener('save-window-state', outerCallback)
+
+  didSaveWindowState: ->
+    ipcRenderer.send('did-save-window-state')
 
   didCancelWindowUnload: ->
     ipcRenderer.send('did-cancel-window-unload')
