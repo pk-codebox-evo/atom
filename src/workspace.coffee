@@ -1,7 +1,6 @@
 _ = require 'underscore-plus'
 url = require 'url'
 path = require 'path'
-{join} = path
 {Emitter, Disposable, CompositeDisposable} = require 'event-kit'
 fs = require 'fs-plus'
 {Directory} = require 'pathwatcher'
@@ -9,7 +8,6 @@ DefaultDirectorySearcher = require './default-directory-searcher'
 Model = require './model'
 TextEditor = require './text-editor'
 PaneContainer = require './pane-container'
-Pane = require './pane'
 Panel = require './panel'
 PanelContainer = require './panel-container'
 Task = require './task'
@@ -30,7 +28,7 @@ class Workspace extends Model
 
     {
       @packageManager, @config, @project, @grammarRegistry, @notificationManager,
-      @clipboard, @viewRegistry, @grammarRegistry, @applicationDelegate, @assert,
+      @viewRegistry, @grammarRegistry, @applicationDelegate, @assert,
       @deserializerManager, @textEditorRegistry
     } = params
 
@@ -184,7 +182,9 @@ class Workspace extends Model
       projectPath = _.find projectPaths, (projectPath) ->
         itemPath is projectPath or itemPath?.startsWith(projectPath + path.sep)
     itemTitle ?= "untitled"
-    projectPath ?= projectPaths[0]
+    projectPath ?= if itemPath then path.dirname(itemPath) else null
+    if projectPath?
+      projectPath = fs.tildify(projectPath)
 
     titleParts = []
     if item? and projectPath?
@@ -441,7 +441,7 @@ class Workspace extends Model
 
     # Avoid adding URLs as recent documents to work-around this Spotlight crash:
     # https://github.com/atom/atom/issues/10071
-    if uri? and not url.parse(uri).protocol?
+    if uri? and (not url.parse(uri).protocol? or process.platform is 'win32')
       @applicationDelegate.addRecentDocument(uri)
 
     pane = @paneContainer.paneForURI(uri) if searchAllPanes

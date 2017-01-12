@@ -1,7 +1,8 @@
 _ = require 'underscore-plus'
 path = require 'path'
+fs = require 'fs-plus'
 Grim = require 'grim'
-{CompositeDisposable, Emitter} = require 'event-kit'
+{CompositeDisposable, Disposable, Emitter} = require 'event-kit'
 {Point, Range} = TextBuffer = require 'text-buffer'
 LanguageMode = require './language-mode'
 DecorationManager = require './decoration-manager'
@@ -58,6 +59,9 @@ ZERO_WIDTH_NBSP = '\ufeff'
 # soft wraps and folds to ensure your code interacts with them correctly.
 module.exports =
 class TextEditor extends Model
+  @setClipboard: (clipboard) ->
+    @clipboard = clipboard
+
   serializationVersion: 1
 
   buffer: null
@@ -110,10 +114,6 @@ class TextEditor extends Model
         throw error
 
     state.buffer = state.tokenizedBuffer.buffer
-    if state.displayLayer = state.buffer.getDisplayLayer(state.displayLayerId)
-      state.selectionsMarkerLayer = state.displayLayer.getMarkerLayer(state.selectionsMarkerLayerId)
-
-    state.clipboard = atomEnvironment.clipboard
     state.assert = atomEnvironment.assert.bind(atomEnvironment)
     editor = new this(state)
     if state.registered
@@ -122,18 +122,19 @@ class TextEditor extends Model
     editor
 
   constructor: (params={}) ->
+    unless @constructor.clipboard?
+      throw new Error("Must call TextEditor.setClipboard at least once before creating TextEditor instances")
+
     super
 
     {
       @softTabs, @firstVisibleScreenRow, @firstVisibleScreenColumn, initialLine, initialColumn, tabLength,
       @softWrapped, @decorationManager, @selectionsMarkerLayer, @buffer, suppressCursorCreation,
-      @mini, @placeholderText, lineNumberGutterVisible, @largeFileMode, @clipboard,
+      @mini, @placeholderText, lineNumberGutterVisible, @largeFileMode,
       @assert, grammar, @showInvisibles, @autoHeight, @autoWidth, @scrollPastEnd, @editorWidthInChars,
       @tokenizedBuffer, @displayLayer, @invisibles, @showIndentGuide,
       @softWrapped, @softWrapAtPreferredLineLength, @preferredLineLength
     } = params
-
-    throw new Error("Must pass a clipboard parameter when constructing TextEditors") unless @clipboard?
 
     @assert ?= (condition) -> condition
     @firstVisibleScreenRow ?= 0
@@ -146,7 +147,7 @@ class TextEditor extends Model
     @hasTerminatedPendingState = false
 
     @mini ?= false
-    @scrollPastEnd ?= true
+    @scrollPastEnd ?= false
     @showInvisibles ?= true
     @softTabs ?= true
     tabLength ?= 2
@@ -163,22 +164,28 @@ class TextEditor extends Model
       grammar, tabLength, @buffer, @largeFileMode, @assert
     })
 
-    displayLayerParams = {
-      invisibles: @getInvisibles(),
-      softWrapColumn: @getSoftWrapColumn(),
-      showIndentGuides: not @isMini() and @doesShowIndentGuide(),
-      atomicSoftTabs: params.atomicSoftTabs ? true,
-      tabLength: tabLength,
-      ratioForCharacter: @ratioForCharacter.bind(this),
-      isWrapBoundary: isWrapBoundary,
-      foldCharacter: ZERO_WIDTH_NBSP,
-      softWrapHangingIndent: params.softWrapHangingIndentLength ? 0
-    }
+    unless @displayLayer?
+      displayLayerParams = {
+        invisibles: @getInvisibles(),
+        softWrapColumn: @getSoftWrapColumn(),
+        showIndentGuides: not @isMini() and @doesShowIndentGuide(),
+        atomicSoftTabs: params.atomicSoftTabs ? true,
+        tabLength: tabLength,
+        ratioForCharacter: @ratioForCharacter.bind(this),
+        isWrapBoundary: isWrapBoundary,
+        foldCharacter: ZERO_WIDTH_NBSP,
+        softWrapHangingIndent: params.softWrapHangingIndentLength ? 0
+      }
 
-    if @displayLayer?
-      @displayLayer.reset(displayLayerParams)
-    else
-      @displayLayer = @buffer.addDisplayLayer(displayLayerParams)
+      if @displayLayer = @buffer.getDisplayLayer(params.displayLayerId)
+        @displayLayer.reset(displayLayerParams)
+        @selectionsMarkerLayer = @displayLayer.getMarkerLayer(params.selectionsMarkerLayerId)
+      else
+        @displayLayer = @buffer.addDisplayLayer(displayLayerParams)
+
+    @backgroundWorkHandle = requestIdleCallback(@doBackgroundWork)
+    @disposables.add new Disposable =>
+      cancelIdleCallback(@backgroundWorkHandle) if @backgroundWorkHandle?
 
     @displayLayer.setTextDecorationLayer(@tokenizedBuffer)
     @defaultMarkerLayer = @displayLayer.addMarkerLayer()
@@ -205,6 +212,13 @@ class TextEditor extends Model
       name: 'line-number'
       priority: 0
       visible: lineNumberGutterVisible
+
+  doBackgroundWork: (deadline) =>
+    if @displayLayer.doBackgroundWork(deadline)
+      @presenter?.updateVerticalDimensions()
+      @backgroundWorkHandle = requestIdleCallback(@doBackgroundWork)
+    else
+      @backgroundWorkHandle = null
 
   update: (params) ->
     displayLayerParams = {}
@@ -240,7 +254,7 @@ class TextEditor extends Model
             displayLayerParams.atomicSoftTabs = value
 
         when 'tabLength'
-          if value isnt @tokenizedBuffer.getTabLength()
+          if value? and value isnt @tokenizedBuffer.getTabLength()
             @tokenizedBuffer.setTabLength(value)
             displayLayerParams.tabLength = value
 
@@ -257,12 +271,12 @@ class TextEditor extends Model
         when 'softWrapAtPreferredLineLength'
           if value isnt @softWrapAtPreferredLineLength
             @softWrapAtPreferredLineLength = value
-            displayLayerParams.softWrapColumn = @getSoftWrapColumn() if @isSoftWrapped()
+            displayLayerParams.softWrapColumn = @getSoftWrapColumn()
 
         when 'preferredLineLength'
           if value isnt @preferredLineLength
             @preferredLineLength = value
-            displayLayerParams.softWrapColumn = @getSoftWrapColumn() if @isSoftWrapped()
+            displayLayerParams.softWrapColumn = @getSoftWrapColumn()
 
         when 'mini'
           if value isnt @mini
@@ -307,12 +321,12 @@ class TextEditor extends Model
         when 'editorWidthInChars'
           if value > 0 and value isnt @editorWidthInChars
             @editorWidthInChars = value
-            displayLayerParams.softWrapColumn = @getSoftWrapColumn() if @isSoftWrapped()
+            displayLayerParams.softWrapColumn = @getSoftWrapColumn()
 
         when 'width'
           if value isnt @width
             @width = value
-            displayLayerParams.softWrapColumn = @getSoftWrapColumn() if @isSoftWrapped()
+            displayLayerParams.softWrapColumn = @getSoftWrapColumn()
 
         when 'scrollPastEnd'
           if value isnt @scrollPastEnd
@@ -331,8 +345,7 @@ class TextEditor extends Model
         else
           throw new TypeError("Invalid TextEditor parameter: '#{param}'")
 
-    if Object.keys(displayLayerParams).length > 0
-      @displayLayer.reset(displayLayerParams)
+    @displayLayer.reset(displayLayerParams)
 
     if @editorElement?
       @editorElement.views.getNextUpdatePromise()
@@ -390,18 +403,22 @@ class TextEditor extends Model
     @disposables.add @displayLayer.onDidChangeSync (e) =>
       @mergeIntersectingSelections()
       @emitter.emit 'did-change', e
+    @disposables.add @displayLayer.onDidReset =>
+      @mergeIntersectingSelections()
+      @emitter.emit 'did-change', {}
 
   destroyed: ->
     @disposables.dispose()
     @displayLayer.destroy()
-    @disposables.dispose()
     @tokenizedBuffer.destroy()
     selection.destroy() for selection in @selections.slice()
-    @selectionsMarkerLayer.destroy()
     @buffer.release()
     @languageMode.destroy()
     @gutterContainer.destroy()
     @emitter.emit 'did-destroy'
+    @emitter.clear()
+    @editorElement = null
+    @presenter = null
 
   ###
   Section: Event Subscription
@@ -704,7 +721,7 @@ class TextEditor extends Model
       suppressCursorCreation: true,
       tabLength: @tokenizedBuffer.getTabLength(),
       @firstVisibleScreenRow, @firstVisibleScreenColumn,
-      @clipboard, @assert, displayLayer, grammar: @getGrammar(),
+      @assert, displayLayer, grammar: @getGrammar(),
       @autoWidth, @autoHeight
     })
 
@@ -803,12 +820,13 @@ class TextEditor extends Model
       allPathSegments = []
       for textEditor in atom.workspace.getTextEditors() when textEditor isnt this
         if textEditor.getFileName() is fileName
-          allPathSegments.push(textEditor.getDirectoryPath().split(path.sep))
+          directoryPath = fs.tildify(textEditor.getDirectoryPath())
+          allPathSegments.push(directoryPath.split(path.sep))
 
       if allPathSegments.length is 0
         return fileName
 
-      ourPathSegments = @getDirectoryPath().split(path.sep)
+      ourPathSegments = fs.tildify(@getDirectoryPath()).split(path.sep)
       allPathSegments.push ourPathSegments
 
       loop
@@ -873,8 +891,8 @@ class TextEditor extends Model
 
   # Determine whether the user should be prompted to save before closing
   # this editor.
-  shouldPromptToSave: ({windowCloseRequested}={}) ->
-    if windowCloseRequested
+  shouldPromptToSave: ({windowCloseRequested, projectHasPaths}={}) ->
+    if windowCloseRequested and projectHasPaths
       false
     else
       @isModified() and not @buffer.hasMultipleEditors()
@@ -904,6 +922,8 @@ class TextEditor extends Model
   # Essential: Returns a {Number} representing the number of screen lines in the
   # editor. This accounts for folds.
   getScreenLineCount: -> @displayLayer.getScreenLineCount()
+
+  getApproximateScreenLineCount: -> @displayLayer.getApproximateScreenLineCount()
 
   # Essential: Returns a {Number} representing the last zero-indexed buffer row
   # number of the editor.
@@ -951,7 +971,6 @@ class TextEditor extends Model
     tokens
 
   screenLineForScreenRow: (screenRow) ->
-    return if screenRow < 0 or screenRow > @getLastScreenRow()
     @displayLayer.getScreenLines(screenRow, screenRow + 1)[0]
 
   bufferRowForScreenRow: (screenRow) ->
@@ -962,16 +981,17 @@ class TextEditor extends Model
       @bufferRowForScreenRow(screenRow)
 
   screenRowForBufferRow: (row) ->
-    if @largeFileMode
-      row
-    else
-      @displayLayer.translateBufferPosition(Point(row, 0)).row
+    @displayLayer.translateBufferPosition(Point(row, 0)).row
 
   getRightmostScreenPosition: -> @displayLayer.getRightmostScreenPosition()
+
+  getApproximateRightmostScreenPosition: -> @displayLayer.getApproximateRightmostScreenPosition()
 
   getMaxScreenLineLength: -> @getRightmostScreenPosition().column
 
   getLongestScreenRow: -> @getRightmostScreenPosition().row
+
+  getApproximateLongestScreenRow: -> @getApproximateRightmostScreenPosition().row
 
   lineLengthForScreenRow: (screenRow) -> @displayLayer.lineLengthForScreenRow(screenRow)
 
@@ -1052,8 +1072,8 @@ class TextEditor extends Model
     )
 
   # Essential: For each selection, replace the selected text with a newline.
-  insertNewline: ->
-    @insertText('\n')
+  insertNewline: (options) ->
+    @insertText('\n', options)
 
   # Essential: For each selection, if the selection is empty, delete the character
   # following the cursor. Otherwise delete the selected text.
@@ -1110,13 +1130,13 @@ class TextEditor extends Model
           # Don't move the last line of a multi-line selection if the selection ends at column 0
           endRow--
 
-        {bufferRow: startRow} = @displayLayer.lineStartBoundaryForBufferRow(startRow)
-        {bufferRow: endRow} = @displayLayer.lineEndBoundaryForBufferRow(endRow)
+        startRow = @displayLayer.findBoundaryPrecedingBufferRow(startRow)
+        endRow = @displayLayer.findBoundaryFollowingBufferRow(endRow + 1)
         linesRange = new Range(Point(startRow, 0), Point(endRow, 0))
 
         # If selected line range is preceded by a fold, one line above on screen
         # could be multiple lines in the buffer.
-        {bufferRow: precedingRow} = @displayLayer.lineStartBoundaryForBufferRow(startRow - 1)
+        precedingRow = @displayLayer.findBoundaryPrecedingBufferRow(startRow - 1)
         insertDelta = linesRange.start.row - precedingRow
 
         # Any folds in the text that is moved will need to be re-created.
@@ -1172,15 +1192,15 @@ class TextEditor extends Model
           # Don't move the last line of a multi-line selection if the selection ends at column 0
           endRow--
 
-        {bufferRow: startRow} = @displayLayer.lineStartBoundaryForBufferRow(startRow)
-        {bufferRow: endRow} = @displayLayer.lineEndBoundaryForBufferRow(endRow)
+        startRow = @displayLayer.findBoundaryPrecedingBufferRow(startRow)
+        endRow = @displayLayer.findBoundaryFollowingBufferRow(endRow + 1)
         linesRange = new Range(Point(startRow, 0), Point(endRow, 0))
 
         # If selected line range is followed by a fold, one line below on screen
         # could be multiple lines in the buffer. But at the same time, if the
         # next buffer row is wrapped, one line in the buffer can represent many
         # screen rows.
-        {bufferRow: followingRow} = @displayLayer.lineEndBoundaryForBufferRow(endRow)
+        followingRow = Math.min(@buffer.getLineCount(), @displayLayer.findBoundaryFollowingBufferRow(endRow + 1))
         insertDelta = followingRow - linesRange.end.row
 
         # Any folds in the text that is moved will need to be re-created.
@@ -1716,10 +1736,14 @@ class TextEditor extends Model
   #   * `onlyNonEmpty` (optional) If `true`, the decoration will only be applied
   #     if the associated `DisplayMarker` is non-empty. Only applicable to the
   #     `gutter`, `line`, and `line-number` types.
-  #   * `position` (optional) Only applicable to decorations of type `overlay` and `block`,
-  #     controls where the view is positioned relative to the `TextEditorMarker`.
+  #   * `position` (optional) Only applicable to decorations of type `overlay` and `block`.
+  #     Controls where the view is positioned relative to the `TextEditorMarker`.
   #     Values can be `'head'` (the default) or `'tail'` for overlay decorations, and
   #     `'before'` (the default) or `'after'` for block decorations.
+  #   * `avoidOverflow` (optional) Only applicable to decorations of type
+  #      `overlay`. Determines whether the decoration adjusts its horizontal or
+  #      vertical position to remain fully visible when it would otherwise
+  #      overflow the editor. Defaults to `true`.
   #
   # Returns a {Decoration} object
   decorateMarker: (marker, decorationParams) ->
@@ -2716,7 +2740,7 @@ class TextEditor extends Model
   # Returns the new {Selection}.
   addSelection: (marker, options={}) ->
     cursor = @addCursor(marker)
-    selection = new Selection(Object.assign({editor: this, marker, cursor, @clipboard}, options))
+    selection = new Selection(Object.assign({editor: this, marker, cursor}, options))
     @selections.push(selection)
     selectionBufferRange = selection.getBufferRange()
     @mergeIntersectingSelections(preserveFolds: options.preserveFolds)
@@ -2822,7 +2846,7 @@ class TextEditor extends Model
   # Essential: Enable or disable soft tabs for this editor.
   #
   # * `softTabs` A {Boolean}
-  setSoftTabs: (@softTabs) -> @update({softTabs})
+  setSoftTabs: (@softTabs) -> @update({@softTabs})
 
   # Returns a {Boolean} indicating whether atomic soft tabs are enabled for this editor.
   hasAtomicSoftTabs: -> @displayLayer.atomicSoftTabs
@@ -2863,7 +2887,7 @@ class TextEditor extends Model
   # whitespace.
   usesSoftTabs: ->
     for bufferRow in [0..@buffer.getLastRow()]
-      continue if @tokenizedBuffer.tokenizedLineForRow(bufferRow).isComment()
+      continue if @tokenizedBuffer.tokenizedLines[bufferRow]?.isComment()
 
       line = @buffer.lineForRow(bufferRow)
       return true  if line[0] is ' '
@@ -2892,11 +2916,7 @@ class TextEditor extends Model
   # Essential: Determine whether lines in this editor are soft-wrapped.
   #
   # Returns a {Boolean}.
-  isSoftWrapped: ->
-    if @largeFileMode
-      false
-    else
-      @softWrapped
+  isSoftWrapped: -> @softWrapped
 
   # Essential: Enable or disable soft wrapping for this editor.
   #
@@ -2928,9 +2948,9 @@ class TextEditor extends Model
   Section: Indentation
   ###
 
-  # Essential: Get the indentation level of the given a buffer row.
+  # Essential: Get the indentation level of the given buffer row.
   #
-  # Returns how deeply the given row is indented based on the soft tabs and
+  # Determines how deeply the given row is indented based on the soft tabs and
   # tab length settings of this editor. Note that if soft tabs are enabled and
   # the tab length is 2, a row with 4 leading spaces would have an indentation
   # level of 2.
@@ -2971,7 +2991,7 @@ class TextEditor extends Model
 
   # Extended: Get the indentation level of the given line of text.
   #
-  # Returns how deeply the given line is indented based on the soft tabs and
+  # Determines how deeply the given line is indented based on the soft tabs and
   # tab length settings of this editor. Note that if soft tabs are enabled and
   # the tab length is 2, a row with 4 leading spaces would have an indentation
   # level of 2.
@@ -3125,7 +3145,7 @@ class TextEditor extends Model
   #
   # * `options` (optional) See {Selection::insertText}.
   pasteText: (options={}) ->
-    {text: clipboardText, metadata} = @clipboard.readWithMetadata()
+    {text: clipboardText, metadata} = @constructor.clipboard.readWithMetadata()
     return false unless @emitWillInsertTextEvent(clipboardText)
 
     metadata ?= {}

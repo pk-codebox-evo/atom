@@ -1,12 +1,13 @@
 _ = require 'underscore-plus'
 path = require 'path'
-temp = require 'temp'
-Package = require '../src/package'
-ThemeManager = require '../src/theme-manager'
+temp = require('temp').track()
 AtomEnvironment = require '../src/atom-environment'
 StorageFolder = require '../src/storage-folder'
 
 describe "AtomEnvironment", ->
+  afterEach ->
+    temp.cleanupSync()
+
   describe 'window sizing methods', ->
     describe '::getPosition and ::setPosition', ->
       originalPosition = null
@@ -326,7 +327,7 @@ describe "AtomEnvironment", ->
 
   describe "::unloadEditorWindow()", ->
     it "saves the BlobStore so it can be loaded after reload", ->
-      configDirPath = temp.mkdirSync()
+      configDirPath = temp.mkdirSync('atom-spec-environment')
       fakeBlobStore = jasmine.createSpyObj("blob store", ["save"])
       atomEnvironment = new AtomEnvironment({applicationDelegate: atom.applicationDelegate, enablePersistence: true, configDirPath, blobStore: fakeBlobStore, window, document})
 
@@ -338,7 +339,7 @@ describe "AtomEnvironment", ->
 
   describe "::destroy()", ->
     it "does not throw exceptions when unsubscribing from ipc events (regression)", ->
-      configDirPath = temp.mkdirSync()
+      configDirPath = temp.mkdirSync('atom-spec-environment')
       fakeDocument = {
         addEventListener: ->
         removeEventListener: ->
@@ -392,8 +393,9 @@ describe "AtomEnvironment", ->
     describe "when the opened path is a uri", ->
       it "adds it to the project's paths as is", ->
         pathToOpen = 'remote://server:7644/some/dir/path'
+        spyOn(atom.project, 'addPath')
         atom.openLocations([{pathToOpen}])
-        expect(atom.project.getPaths()[0]).toBe pathToOpen
+        expect(atom.project.addPath).toHaveBeenCalledWith(pathToOpen)
 
   describe "::updateAvailable(info) (called via IPC from browser process)", ->
     subscription = null
@@ -402,6 +404,8 @@ describe "AtomEnvironment", ->
       subscription?.dispose()
 
     it "invokes onUpdateAvailable listeners", ->
+      return unless process.platform is 'darwin' # Test tied to electron autoUpdater, we use something else on Linux and Win32
+
       atom.listenForUpdates()
 
       updateAvailableHandler = jasmine.createSpy("update-available-handler")
